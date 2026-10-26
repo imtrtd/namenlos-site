@@ -105,6 +105,7 @@ function Book() {
       budget: form.budget,
       orgName: form.orgName,
       orgFormat: form.orgFormat,
+      sessionFormat: "",
       people: form.people,
       flashId: flash?.id ?? "",
       lang,
