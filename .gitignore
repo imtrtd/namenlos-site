@@ -15,3 +15,4 @@ artifacts
 AGENTS.md
 AGENTS.project.md
 .DS_Store
+.wrangler
