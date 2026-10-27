@@ -6,8 +6,11 @@ const rawDatabaseUrl =
 const databaseUrl =
   rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
 
+// Serverless hosts (Vercel, Cloudflare Workers/Pages) have no PGLite data
+// file and forbid I/O at module scope, so never bootstrap PGLite there.
 const onVercel =
-  typeof process !== "undefined" && Boolean(process.env.VERCEL);
+  (typeof process !== "undefined" && Boolean(process.env.VERCEL)) ||
+  (typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers");
 
 /**
  * Neon when DATABASE_URL is set. PGLite only for local/preview without Vercel.
@@ -137,7 +140,7 @@ async function createSql(): Promise<Sql> {
   }
   if (databaseUrl) return createNeonSql();
   if (onVercel) {
-    throw new Error("DATABASE_URL is not set on Vercel");
+    throw new Error("DATABASE_URL is not set on this serverless host");
   }
   return createPgliteSql();
 }
