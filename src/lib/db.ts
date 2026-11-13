@@ -1,33 +1,49 @@
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
 
-const rawDatabaseUrl =
-  typeof process !== "undefined" ? process.env.DATABASE_URL : undefined;
-const databaseUrl =
-  rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
+function readProcessEnv(name: string): string | undefined {
+  try {
+    if (typeof process === "undefined") return undefined;
+    const value = process.env[name];
+    return value && value.trim() ? value.trim() : undefined;
+  } catch {
+    // Workers can throw when process.env is touched outside a request.
+    return undefined;
+  }
+}
 
-// Serverless hosts (Vercel, Cloudflare Workers/Pages) have no PGLite data
-// file and forbid I/O at module scope, so never bootstrap PGLite there.
-const onVercel =
-  (typeof process !== "undefined" && Boolean(process.env.VERCEL)) ||
-  (typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers");
+const databaseUrl = readProcessEnv("DATABASE_URL");
 
 /**
- * Neon when DATABASE_URL is set. PGLite only for local/preview without Vercel.
- * On Vercel without DATABASE_URL we do not touch PGlite — the wasm data file
- * is not in the serverless bundle and throws ENOENT.
+ * Vercel and Cloudflare Workers/Pages cannot bootstrap PGLite: there is no
+ * wasm data file, and module-scope I/O is forbidden. `CF_PAGES` is only
+ * present once the request env is populated, so the user-agent check covers
+ * module evaluation too.
+ */
+export function isServerlessHost(): boolean {
+  try {
+    if (typeof process !== "undefined") {
+      if (process.env.VERCEL) return true;
+      if (process.env.CF_PAGES === "1") return true;
+    }
+  } catch {
+    return true;
+  }
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  return typeof ua === "string" && ua.includes("Cloudflare-Workers");
+}
+
+const serverlessHost = isServerlessHost();
+
+/**
+ * Neon when DATABASE_URL is set. PGLite only for local/preview.
+ * On a serverless host without DATABASE_URL we do not touch PGLite.
  */
 export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
 
 export interface Sql {
-  <T = Record<string, unknown>>(
-    strings: TemplateStringsArray,
-    ...values: unknown[]
-  ): Promise<T[]>;
-  query<T = Record<string, unknown>>(
-    text: string,
-    params?: unknown[],
-  ): Promise<T[]>;
+  <T = Record<string, unknown>>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>;
+  query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<T[]>;
 }
 
 const globalRef = globalThis as typeof globalThis & {
@@ -102,13 +118,9 @@ async function createPgliteSql(): Promise<Sql> {
       import: "default",
       eager: true,
     }) as Record<string, string>;
-    const doneRows = await pg.query<{ name: string }>(
-      "select name from _migrations",
-    );
+    const doneRows = await pg.query<{ name: string }>("select name from _migrations");
     const done = new Set(doneRows.rows.map((r) => r.name));
-    for (const [path, text] of Object.entries(migrations).sort(([a], [b]) =>
-      a.localeCompare(b),
-    )) {
+    for (const [path, text] of Object.entries(migrations).sort(([a], [b]) => a.localeCompare(b))) {
       const name = path.split("/").pop() as string;
       if (done.has(name)) continue;
       await pg.transaction(async (tx) => {
@@ -139,8 +151,10 @@ async function createSql(): Promise<Sql> {
     );
   }
   if (databaseUrl) return createNeonSql();
-  if (onVercel) {
-    throw new Error("DATABASE_URL is not set on this serverless host");
+  if (serverlessHost || isServerlessHost()) {
+    throw new Error(
+      "DATABASE_URL is not set. Booking storage is unavailable until Postgres is configured on this host.",
+    );
   }
   return createPgliteSql();
 }
@@ -154,7 +168,7 @@ export function getSql(): Promise<Sql> {
 }
 
 export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite> {
-  if (onVercel || databaseUrl) {
+  if (serverlessHost || isServerlessHost() || databaseUrl) {
     throw new Error("getPglite() is only available locally without DATABASE_URL");
   }
   await getSql();
@@ -164,14 +178,14 @@ export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite
 }
 
 export function ensureDbReady(): Promise<void> {
-  if (databaseUrl || onVercel) return Promise.resolve();
+  if (databaseUrl || serverlessHost || isServerlessHost()) return Promise.resolve();
   return getSql().then(() => undefined);
 }
 
 const globalBoot = globalThis as typeof globalThis & {
   __pgBootstrapPromise__?: Promise<void>;
 };
-if (typeof window === "undefined" && !databaseUrl && !onVercel) {
+if (typeof window === "undefined" && !databaseUrl && !serverlessHost) {
   globalBoot.__pgBootstrapPromise__ ??= ensureDbReady().catch((err) => {
     globalBoot.__pgBootstrapPromise__ = undefined;
     console.error("[db] PGLite bootstrap failed:", err);
