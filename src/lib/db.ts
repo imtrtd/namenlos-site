@@ -12,13 +12,16 @@ function readProcessEnv(name: string): string | undefined {
   }
 }
 
-const databaseUrl = readProcessEnv("DATABASE_URL");
-
 /**
  * Vercel and Cloudflare Workers/Pages cannot bootstrap PGLite: there is no
  * wasm data file, and module-scope I/O is forbidden. `CF_PAGES` is only
  * present once the request env is populated, so the user-agent check covers
  * module evaluation too.
+ *
+ * `DATABASE_URL` is read again on each `getSql()` call. Cloudflare may leave
+ * `process.env` empty while this module evaluates and fill it only inside the
+ * request. A snapshot taken here would keep booking inserts on the "no
+ * database" path after Postgres is configured.
  */
 export function isServerlessHost(): boolean {
   try {
@@ -34,12 +37,13 @@ export function isServerlessHost(): boolean {
 }
 
 const serverlessHost = isServerlessHost();
+/** Import-time only: decides whether to kick local PGLite before any request. */
+const databaseUrlAtImport = readProcessEnv("DATABASE_URL");
 
-/**
- * Neon when DATABASE_URL is set. PGLite only for local/preview.
- * On a serverless host without DATABASE_URL we do not touch PGLite.
- */
-export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
+/** Neon when DATABASE_URL is set at the moment of the call. PGLite otherwise. */
+export function getDbSource(): DbSource {
+  return readProcessEnv("DATABASE_URL") ? "neon" : "pglite";
+}
 
 export interface Sql {
   <T = Record<string, unknown>>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>;
@@ -73,13 +77,13 @@ function toSql(run: Run): Sql {
   return sql;
 }
 
-function createNeonSql(): Promise<Sql> {
+function createNeonSql(connectionString: string): Promise<Sql> {
   globalRef.__pgSqlPromise__ ??= (async () => {
     const { Pool, types } = await import("pg");
     types.setTypeParser(OID_INT8, Number);
     types.setTypeParser(OID_DATE, identity);
     types.setTypeParser(OID_INTERVAL, identity);
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString });
     return toSql(async <T>(text: string, params: unknown[]) => {
       const res = await pool.query(text, params);
       return res.rows as T[];
@@ -142,15 +146,16 @@ async function createPgliteSql(): Promise<Sql> {
 }
 
 let sqlPromise: Promise<Sql> | null = null;
+let sqlPromiseKey: string | null = null;
 
-async function createSql(): Promise<Sql> {
+async function createSql(connectionString: string | undefined): Promise<Sql> {
   if (typeof window !== "undefined") {
     throw new Error(
       "@/lib/db is server-only — call getSql() from a createServerFn handler " +
         "or a server route loader, never from client code.",
     );
   }
-  if (databaseUrl) return createNeonSql();
+  if (connectionString) return createNeonSql(connectionString);
   if (serverlessHost || isServerlessHost()) {
     throw new Error(
       "DATABASE_URL is not set. Booking storage is unavailable until Postgres is configured on this host.",
@@ -160,15 +165,24 @@ async function createSql(): Promise<Sql> {
 }
 
 export function getSql(): Promise<Sql> {
-  sqlPromise ??= createSql().catch((err) => {
+  const connectionString = readProcessEnv("DATABASE_URL");
+  const key =
+    connectionString ?? (serverlessHost || isServerlessHost() ? "serverless-missing" : "pglite");
+  if (sqlPromise && sqlPromiseKey !== key) {
     sqlPromise = null;
+    if (connectionString) globalRef.__pgSqlPromise__ = undefined;
+  }
+  sqlPromiseKey = key;
+  sqlPromise ??= createSql(connectionString).catch((err) => {
+    sqlPromise = null;
+    sqlPromiseKey = null;
     throw err;
   });
   return sqlPromise;
 }
 
 export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite> {
-  if (serverlessHost || isServerlessHost() || databaseUrl) {
+  if (serverlessHost || isServerlessHost() || readProcessEnv("DATABASE_URL")) {
     throw new Error("getPglite() is only available locally without DATABASE_URL");
   }
   await getSql();
@@ -178,14 +192,15 @@ export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite
 }
 
 export function ensureDbReady(): Promise<void> {
-  if (databaseUrl || serverlessHost || isServerlessHost()) return Promise.resolve();
+  if (readProcessEnv("DATABASE_URL") || serverlessHost || isServerlessHost())
+    return Promise.resolve();
   return getSql().then(() => undefined);
 }
 
 const globalBoot = globalThis as typeof globalThis & {
   __pgBootstrapPromise__?: Promise<void>;
 };
-if (typeof window === "undefined" && !databaseUrl && !serverlessHost) {
+if (typeof window === "undefined" && !databaseUrlAtImport && !serverlessHost) {
   globalBoot.__pgBootstrapPromise__ ??= ensureDbReady().catch((err) => {
     globalBoot.__pgBootstrapPromise__ = undefined;
     console.error("[db] PGLite bootstrap failed:", err);
