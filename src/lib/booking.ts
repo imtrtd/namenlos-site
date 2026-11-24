@@ -52,7 +52,7 @@ export const submitBooking = createServerFn({ method: "POST" })
   })
   .handler(async ({ data }) => {
     if (data.hp && data.hp.length > 0) {
-      return { ok: true as const, skipped: true };
+      return { ok: true as const, skipped: true, delivered: true };
     }
 
     let skipped = false;
@@ -74,13 +74,14 @@ export const submitBooking = createServerFn({ method: "POST" })
       skipped = true;
     }
 
+    let delivered = false;
     try {
-      await notifyNewBooking(data);
+      delivered = await notifyNewBooking(data);
     } catch (err) {
       console.error("[booking] notify failed", err);
     }
 
-    return { ok: true as const, skipped };
+    return { ok: true as const, skipped, delivered };
   });
 
 export function buildTelegramText(data: BookingInput): string {

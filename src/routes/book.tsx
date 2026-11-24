@@ -35,6 +35,7 @@ function Book() {
   const [kind, setKind] = useState<"private" | "org">(search.type === "org" ? "org" : "private");
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  const [delivered, setDelivered] = useState(false);
   const [form, setForm] = useState({
     name: "",
     contact: "",
@@ -112,7 +113,8 @@ function Book() {
       hp: form.hp,
     };
     try {
-      await submitBooking({ data: payload });
+      const res = await submitBooking({ data: payload });
+      setDelivered(res.delivered);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
       if (msg && !msg.includes("{") && !msg.includes("too_small")) {
@@ -126,6 +128,7 @@ function Book() {
     }
   }
 
+  // Studio got the request via Telegram/email/webhook: no need to DM on Instagram.
   const igHref = done ? SITE.igDm : null;
 
   function openDirect() {
@@ -148,15 +151,17 @@ function Book() {
         {done && igHref ? (
           <div className="panel mt-8 p-6">
             <h2 className="font-display text-2xl uppercase text-yellow">{t("book.ok")}</h2>
-            <a
-              href={igHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn-primary btn-block mt-5"
-              onClick={openDirect}
-            >
-              {t("book.tg")}
-            </a>
+            {delivered ? null : (
+              <a
+                href={igHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-primary btn-block mt-5"
+                onClick={openDirect}
+              >
+                {t("book.tg")}
+              </a>
+            )}
             {isMini ? (
               <button type="button" className="btn btn-outline btn-sm btn-block mt-3" onClick={close}>
                 Close
