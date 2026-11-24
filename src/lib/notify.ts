@@ -82,7 +82,7 @@ async function sendWebhook(data: BookingInput, text: string): Promise<boolean> {
 }
 
 /** Fire-and-forget studio alerts. Never throw to the booking form. */
-export async function notifyNewBooking(data: BookingInput): Promise<void> {
+export async function notifyNewBooking(data: BookingInput): Promise<boolean> {
   const text = buildTelegramText(data);
   const jobs = [sendTelegram(text), sendEmail(text), sendWebhook(data, text)];
   const results = await Promise.allSettled(jobs);
@@ -95,4 +95,5 @@ export async function notifyNewBooking(data: BookingInput): Promise<void> {
       console.error("[notify] failed", result.reason);
     }
   }
+  return sent > 0;
 }
