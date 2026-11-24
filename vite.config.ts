@@ -154,7 +154,7 @@ export default defineConfig(({ command, isPreview }) => ({
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.
             serverDir: "./server",
-            // Same response headers previously set in vercel.json. Nitro writes
+            // Response headers for all routes. Nitro writes
             // them into dist/_headers for Cloudflare Pages.
             routeRules: {
               "/**": {

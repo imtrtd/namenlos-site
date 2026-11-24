@@ -1,0 +1,8 @@
+{
+  // Cloudflare Pages project (Git integration or `npm run deploy`).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "namenlos-tattoo",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2025-11-01",
+  "compatibility_flags": ["nodejs_compat"]
+}

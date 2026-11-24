@@ -13,7 +13,7 @@ function readProcessEnv(name: string): string | undefined {
 }
 
 /**
- * Vercel and Cloudflare Workers/Pages cannot bootstrap PGLite: there is no
+ * Cloudflare Workers/Pages cannot bootstrap PGLite: there is no
  * wasm data file, and module-scope I/O is forbidden. `CF_PAGES` is only
  * present once the request env is populated, so the user-agent check covers
  * module evaluation too.
@@ -26,7 +26,6 @@ function readProcessEnv(name: string): string | undefined {
 export function isServerlessHost(): boolean {
   try {
     if (typeof process !== "undefined") {
-      if (process.env.VERCEL) return true;
       if (process.env.CF_PAGES === "1") return true;
     }
   } catch {

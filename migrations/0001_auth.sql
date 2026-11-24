@@ -6,7 +6,7 @@
 -- Postgres preserves the case Better Auth queries by.
 --
 -- Migrations in this folder are the single source of truth for your schema. They
--- apply to Neon during the Vercel build (`npm run build`) and to the local
+-- apply to Neon during the Cloudflare Pages build (`npm run build`) and to the local
 -- PGLite fallback automatically on startup, so dev matches production. Applied
 -- files are recorded by name in `_migrations` and NEVER run again.
 --

@@ -240,7 +240,7 @@ function detectCustomOgCard(cwd = process.cwd(), site = {}) {
   return existsSync(join(cwd, "public/og.jpg")) || existsSync(join(cwd, "public/og.png"));
 }
 
-/** Snapshot for Vite/Nitro to bake into the server bundle (Vercel has no workspace FS). */
+/** Snapshot for Vite/Nitro to bake into the server bundle (Workers have no workspace FS). */
 export function snapshotOgIdentity(cwd = process.cwd()) {
   const site = { ...readOgSite(cwd) };
   if (detectCustomOgCard(cwd, site)) {
