@@ -1,0 +1,90 @@
+name: Domain cutover (namenlos.tattoo → Cloudflare Pages)
+
+# One-off helper. mode=inspect only reads. mode=apply points namenlos.tattoo and www at the Pages project
+# and removes only the two Vercel records (apex A, www CNAME). Mail (MX, SPF, DKIM, TXT) and app.* are not touched.
+on:
+  # On a PR that touches this file the job runs in inspect mode (read only), so it can be tried before it lands.
+  pull_request:
+    paths: [".github/workflows/domain-cutover.yml"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "inspect (read only), domains (add domains to the Pages project, DNS untouched) or apply (DNS cutover)"
+        type: choice
+        options: [inspect, domains, apply]
+        default: inspect
+
+permissions:
+  contents: read
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    env:
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      ACC: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DOMAIN: namenlos.tattoo
+      PROJECT: namenlos-tattoo
+      MODE: ${{ inputs.mode }}
+    steps:
+      - name: Cloudflare API helper
+        run: |
+          cat > cf.sh <<'SH'
+          cf() { curl -sS -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" "$@"; }
+          SH
+
+      - name: Token and account
+        run: |
+          . ./cf.sh
+          echo "token valid:"; cf https://api.cloudflare.com/client/v4/user/tokens/verify | jq '{success, status: .result.status, errors}'
+          echo "accounts visible:"; cf https://api.cloudflare.com/client/v4/accounts | jq -r '.result[]? | "\(.name)  \(.id | .[0:6])…"'
+
+      - name: Pages project
+        run: |
+          . ./cf.sh
+          cf "https://api.cloudflare.com/client/v4/accounts/$ACC/pages/projects/$PROJECT" | jq '{success, errors, name: .result.name, subdomain: .result.subdomain, domains: .result.domains, production_branch: .result.production_branch, latest: (.result.latest_deployment | {url, environment, stage: .latest_stage.status}),
+            env_var_names: (.result.deployment_configs.production.env_vars // {} | keys), compat: .result.deployment_configs.production.compatibility_date}'
+
+      - name: Zone and DNS records
+        id: zone
+        run: |
+          . ./cf.sh
+          Z=$(cf "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" | tee zone.json | jq -r '.result[0].id // empty')
+          jq '{success, errors, zones: [.result[]? | {name, status, account: .account.name, plan: .plan.name}]}' zone.json
+          if [ -z "$Z" ]; then
+            echo "::warning::zone $DOMAIN is not in the account of this token (DNS cannot be changed from here)"
+            [ "$MODE" = "apply" ] && exit 1
+            exit 0
+          fi
+          echo "zone=$Z" >> "$GITHUB_OUTPUT"
+          cf "https://api.cloudflare.com/client/v4/zones/$Z/dns_records?per_page=100" | jq -r '.result[] | "\(.type)\t\(.name)\t\(.content | .[0:60])\tproxied=\(.proxied)\tid=\(.id | .[0:6])"'
+
+      - name: Add domains to the Pages project
+        if: inputs.mode == 'domains' || inputs.mode == 'apply'
+        run: |
+          . ./cf.sh
+          B="https://api.cloudflare.com/client/v4"
+          for h in "$DOMAIN" "www.$DOMAIN"; do
+            echo "pages domain $h:"; cf -X POST "$B/accounts/$ACC/pages/projects/$PROJECT/domains" --data "{\"name\":\"$h\"}" | jq -c '{success, errors: [.errors[]?.message], status: .result.status, validation: .result.validation_data, verification: .result.verification_data}'
+          done
+          echo "domains now:"; cf "$B/accounts/$ACC/pages/projects/$PROJECT/domains" | jq -c '.result[]? | {name, status, validation: .validation_data.status, error: .validation_data.error_message}'
+
+      - name: Apply cutover (DNS)
+        if: inputs.mode == 'apply'
+        run: |
+          . ./cf.sh
+          Z="${{ steps.zone.outputs.zone }}"; B="https://api.cloudflare.com/client/v4"; TARGET="$PROJECT.pages.dev"
+          # 2. drop only the Vercel records
+          cf "$B/zones/$Z/dns_records?per_page=100" | jq -r --arg d "$DOMAIN" '.result[] | select((.type=="A" and .name==$d and .content=="76.76.21.21") or (.type=="CNAME" and .name=="www."+$d and (.content|test("vercel-dns")))) | .id' | while read id; do
+            echo "delete vercel record $id"; cf -X DELETE "$B/zones/$Z/dns_records/$id" | jq -c '{success, errors}'
+          done
+          # 3. point apex and www at Pages (proxied CNAME; apex is flattened by Cloudflare)
+          for n in "$DOMAIN" "www.$DOMAIN"; do
+            echo "cname $n -> $TARGET"; cf -X POST "$B/zones/$Z/dns_records" --data "{\"type\":\"CNAME\",\"name\":\"$n\",\"content\":\"$TARGET\",\"proxied\":true,\"ttl\":1}" | jq -c '{success, errors: [.errors[]?.message]}'
+          done
+
+      - name: Result
+        if: inputs.mode == 'apply'
+        run: |
+          sleep 20
+          for u in https://$DOMAIN/ https://www.$DOMAIN/; do printf "%s " $u; curl -s -o /dev/null -L -w "%{http_code} %{url_effective}\n" --max-time 30 "$u"; done
