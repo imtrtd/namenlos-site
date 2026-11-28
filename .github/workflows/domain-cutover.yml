@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "inspect (read only) or apply"
+        description: "inspect (read only), domains (add domains to the Pages project, DNS untouched) or apply (DNS cutover)"
         type: choice
-        options: [inspect, apply]
+        options: [inspect, domains, apply]
         default: inspect
 
 permissions:
@@ -51,19 +51,29 @@ jobs:
           . ./cf.sh
           Z=$(cf "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" | tee zone.json | jq -r '.result[0].id // empty')
           jq '{success, errors, zones: [.result[]? | {name, status, account: .account.name, plan: .plan.name}]}' zone.json
-          if [ -z "$Z" ]; then echo "::error::zone $DOMAIN is not visible to this token/account"; exit 1; fi
+          if [ -z "$Z" ]; then
+            echo "::warning::zone $DOMAIN is not in the account of this token (DNS cannot be changed from here)"
+            [ "$MODE" = "apply" ] && exit 1
+            exit 0
+          fi
           echo "zone=$Z" >> "$GITHUB_OUTPUT"
           cf "https://api.cloudflare.com/client/v4/zones/$Z/dns_records?per_page=100" | jq -r '.result[] | "\(.type)\t\(.name)\t\(.content | .[0:60])\tproxied=\(.proxied)\tid=\(.id | .[0:6])"'
 
-      - name: Apply cutover
+      - name: Add domains to the Pages project
+        if: inputs.mode == 'domains' || inputs.mode == 'apply'
+        run: |
+          . ./cf.sh
+          B="https://api.cloudflare.com/client/v4"
+          for h in "$DOMAIN" "www.$DOMAIN"; do
+            echo "pages domain $h:"; cf -X POST "$B/accounts/$ACC/pages/projects/$PROJECT/domains" --data "{\"name\":\"$h\"}" | jq -c '{success, errors: [.errors[]?.message], status: .result.status, validation: .result.validation_data, verification: .result.verification_data}'
+          done
+          echo "domains now:"; cf "$B/accounts/$ACC/pages/projects/$PROJECT/domains" | jq -c '.result[]? | {name, status, validation: .validation_data.status, error: .validation_data.error_message}'
+
+      - name: Apply cutover (DNS)
         if: inputs.mode == 'apply'
         run: |
           . ./cf.sh
           Z="${{ steps.zone.outputs.zone }}"; B="https://api.cloudflare.com/client/v4"; TARGET="$PROJECT.pages.dev"
-          # 1. domains on the Pages project
-          for h in "$DOMAIN" "www.$DOMAIN"; do
-            echo "pages domain $h:"; cf -X POST "$B/accounts/$ACC/pages/projects/$PROJECT/domains" --data "{\"name\":\"$h\"}" | jq -c '{success, errors: [.errors[]?.message], status: .result.status}'
-          done
           # 2. drop only the Vercel records
           cf "$B/zones/$Z/dns_records?per_page=100" | jq -r --arg d "$DOMAIN" '.result[] | select((.type=="A" and .name==$d and .content=="76.76.21.21") or (.type=="CNAME" and .name=="www."+$d and (.content|test("vercel-dns")))) | .id' | while read id; do
             echo "delete vercel record $id"; cf -X DELETE "$B/zones/$Z/dns_records/$id" | jq -c '{success, errors}'
