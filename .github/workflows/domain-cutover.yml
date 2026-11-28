@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "inspect (read only), domains (add domains to the Pages project, DNS untouched) or apply (DNS cutover)"
+        description: "inspect (read only), domains (add domains to the Pages project), release (remove them from it, DNS untouched) or apply (DNS cutover)"
         type: choice
-        options: [inspect, domains, apply]
+        options: [inspect, domains, release, apply]
         default: inspect
 
 permissions:
@@ -68,6 +68,16 @@ jobs:
             echo "pages domain $h:"; cf -X POST "$B/accounts/$ACC/pages/projects/$PROJECT/domains" --data "{\"name\":\"$h\"}" | jq -c '{success, errors: [.errors[]?.message], status: .result.status, validation: .result.validation_data, verification: .result.verification_data}'
           done
           echo "domains now:"; cf "$B/accounts/$ACC/pages/projects/$PROJECT/domains" | jq -c '.result[]? | {name, status, validation: .validation_data.status, error: .validation_data.error_message}'
+
+      - name: Release domains from the Pages project
+        if: inputs.mode == 'release'
+        run: |
+          . ./cf.sh
+          B="https://api.cloudflare.com/client/v4"
+          for h in "$DOMAIN" "www.$DOMAIN"; do
+            echo "remove $h from $PROJECT:"; cf -X DELETE "$B/accounts/$ACC/pages/projects/$PROJECT/domains/$h" | jq -c '{success, errors: [.errors[]?.message]}'
+          done
+          echo "domains now:"; cf "$B/accounts/$ACC/pages/projects/$PROJECT/domains" | jq -c '[.result[]? | .name]'
 
       - name: Apply cutover (DNS)
         if: inputs.mode == 'apply'
