@@ -3,6 +3,9 @@ name: Domain cutover (namenlos.tattoo → Cloudflare Pages)
 # One-off helper. mode=inspect only reads. mode=apply points namenlos.tattoo and www at the Pages project
 # and removes only the two Vercel records (apex A, www CNAME). Mail (MX, SPF, DKIM, TXT) and app.* are not touched.
 on:
+  # On a PR that touches this file the job runs in inspect mode (read only), so it can be tried before it lands.
+  pull_request:
+    paths: [".github/workflows/domain-cutover.yml"]
   workflow_dispatch:
     inputs:
       mode:
